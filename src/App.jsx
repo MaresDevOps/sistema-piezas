@@ -47,8 +47,6 @@ import {
   onAuthStateChanged, 
   updateProfile,
   signInWithPopup,
-  signInWithRedirect,
-  getRedirectResult,
   GoogleAuthProvider
 } from 'firebase/auth';
 import { 
@@ -431,20 +429,6 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Handle redirect result for Google Sign-In
-  useEffect(() => {
-    getRedirectResult(auth)
-      .then((result) => {
-        if (result) {
-          setAuthError('');
-        }
-      })
-      .catch((err) => {
-        console.error("Error de redirección de autenticación:", err);
-        setAuthError("Error al iniciar sesión con Google: " + err.message);
-      });
-  }, []);
-
   // ==========================================
   // REAL-TIME ORDERS LISTENER (MIS COMPRAS)
   // ==========================================
@@ -536,10 +520,32 @@ export default function App() {
     setAuthError('');
     const provider = new GoogleAuthProvider();
     try {
-      await signInWithRedirect(auth, provider);
+      const result = await signInWithPopup(auth, provider);
+      const user = result.user;
+      
+      const profileSnap = await getDoc(doc(db, 'users', user.uid));
+      if (!profileSnap.exists()) {
+        const userProfile = {
+          name: user.displayName || user.email.split('@')[0],
+          email: user.email,
+          username: user.email.split('@')[0],
+          rank: 'Rig Builder Rookie',
+          avatarColor: 'from-cyan-500 to-blue-500'
+        };
+        await setDoc(doc(db, 'users', user.uid), userProfile);
+      }
+      
+      setShowAuthModal(false);
+      setAuthForm({ name: '', email: '', username: '', password: '' });
     } catch (err) {
-      console.error(err);
-      setAuthError('Error al iniciar sesión con Google: ' + err.message);
+      console.error("Google Auth Error:", err);
+      if (err.code === 'auth/unauthorized-domain') {
+        setAuthError('Error: Este dominio no está autorizado en tu consola de Firebase. Debes agregar "MaresDevOps.github.io" a los Dominios Autorizados de Authentication.');
+      } else if (err.code === 'auth/popup-closed-by-user') {
+        setAuthError('El inicio de sesión fue cancelado al cerrar la ventana.');
+      } else {
+        setAuthError('Error al iniciar sesión con Google: ' + err.message);
+      }
     }
   };
 
