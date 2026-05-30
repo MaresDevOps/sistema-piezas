@@ -323,6 +323,53 @@ export default function App() {
   });
   const [showQuoteModal, setShowQuoteModal] = useState(false);
 
+  const selectBuilderPart = (category, product) => {
+    setBuilderSpecs(prev => ({
+      ...prev,
+      [category]: product
+    }));
+  };
+
+  const clearBuilder = () => {
+    setBuilderSpecs({
+      CPU: null,
+      Motherboard: null,
+      RAM: null,
+      GPU: null,
+      Storage: null,
+      PSU: null,
+      Case: null
+    });
+  };
+
+  const addBuilderToCart = () => {
+    const selectedParts = Object.values(builderSpecs).filter(p => p !== null);
+    if (selectedParts.length === 0) {
+      alert("Selecciona al menos un componente en el PC Builder.");
+      return;
+    }
+    
+    setCart(prevCart => {
+      let updatedCart = [...prevCart];
+      selectedParts.forEach(product => {
+        const existingItem = updatedCart.find(item => item.id === product.id);
+        if (existingItem) {
+          updatedCart = updatedCart.map(item => 
+            item.id === product.id 
+              ? { ...item, quantity: Math.min(item.quantity + 1, product.stock) }
+              : item
+          );
+        } else {
+          updatedCart.push({ ...product, quantity: 1 });
+        }
+      });
+      return updatedCart;
+    });
+    
+    alert("¡Componentes del PC Builder agregados al carrito!");
+    setIsCartOpen(true);
+  };
+
   // Authentication
   const [currentUser, setCurrentUser] = useState(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
@@ -793,8 +840,18 @@ export default function App() {
     setGeneratedInvoice(invoiceData);
   };
 
-  // PC Builder specs total helper
   const activeSelectedParts = Object.values(builderSpecs).filter(p => p !== null);
+
+  const builderWatts = Object.entries(builderSpecs)
+    .filter(([cat]) => cat !== 'PSU')
+    .reduce((sum, [cat, val]) => sum + (val ? (val.watts || 0) : 0), 0);
+
+  const psuWatts = builderSpecs.PSU ? (builderSpecs.PSU.watts || 0) : 0;
+
+  const isPowerInsufficient = psuWatts > 0 && builderWatts > psuWatts;
+
+  const builderTotal = Object.values(builderSpecs)
+    .reduce((sum, val) => sum + (val ? (val.price || 0) : 0), 0);
 
   // Filters & Sorting list execution
   const filteredProducts = products.filter(p => {
