@@ -4,7 +4,7 @@ import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBFn_FGDOOjMGnY2_lRJJMc1McKHb_MO0I",
-  authDomain: "nexus-hardware-5b15a.firebaseapp.com",
+  authDomain: "nexus-hardware-5b15a.web.app",
   projectId: "nexus-hardware-5b15a",
   storageBucket: "nexus-hardware-5b15a.firebasestorage.app",
   messagingSenderId: "491085597213",
