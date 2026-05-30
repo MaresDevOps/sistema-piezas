@@ -47,6 +47,8 @@ import {
   onAuthStateChanged, 
   updateProfile,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider
 } from 'firebase/auth';
 import { 
@@ -429,6 +431,20 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Handle redirect result for Google Sign-In
+  useEffect(() => {
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result) {
+          setAuthError('');
+        }
+      })
+      .catch((err) => {
+        console.error("Error de redirección de autenticación:", err);
+        setAuthError("Error al iniciar sesión con Google: " + err.message);
+      });
+  }, []);
+
   // ==========================================
   // REAL-TIME ORDERS LISTENER (MIS COMPRAS)
   // ==========================================
@@ -520,28 +536,10 @@ export default function App() {
     setAuthError('');
     const provider = new GoogleAuthProvider();
     try {
-      const result = await signInWithPopup(auth, provider);
-      const user = result.user;
-      
-      const profileSnap = await getDoc(doc(db, 'users', user.uid));
-      if (!profileSnap.exists()) {
-        const userProfile = {
-          name: user.displayName || user.email.split('@')[0],
-          email: user.email,
-          username: user.email.split('@')[0],
-          rank: 'Rig Builder Rookie',
-          avatarColor: 'from-cyan-500 to-blue-500'
-        };
-        await setDoc(doc(db, 'users', user.uid), userProfile);
-      }
-      
-      setShowAuthModal(false);
-      setAuthForm({ name: '', email: '', username: '', password: '' });
+      await signInWithRedirect(auth, provider);
     } catch (err) {
       console.error(err);
-      if (err.code !== 'auth/popup-closed-by-user') {
-        setAuthError('Error al iniciar sesión con Google: ' + err.message);
-      }
+      setAuthError('Error al iniciar sesión con Google: ' + err.message);
     }
   };
 
