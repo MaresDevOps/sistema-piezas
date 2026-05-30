@@ -35,7 +35,20 @@ import {
   CreditCard,
   History,
   FileCheck,
-  Printer
+  Printer,
+  ShieldCheck,
+  Edit3,
+  PlusCircle,
+  BarChart3,
+  Zap,
+  Image,
+  Tag,
+  PackageCheck,
+  ListOrdered,
+  Save,
+  XCircle,
+  TrendingUp,
+  Users
 } from 'lucide-react';
 
 // Import Firebase Services
@@ -55,11 +68,14 @@ import {
   getDocs, 
   setDoc, 
   updateDoc, 
+  addDoc,
+  deleteDoc,
   collection, 
   query, 
   where, 
   onSnapshot, 
-  writeBatch 
+  writeBatch,
+  orderBy
 } from 'firebase/firestore';
 
 // ==========================================
@@ -322,6 +338,7 @@ export default function App() {
     Case: null
   });
   const [showQuoteModal, setShowQuoteModal] = useState(false);
+  const [isAdminMode, setIsAdminMode] = useState(false);
 
   const selectBuilderPart = (category, product) => {
     setBuilderSpecs(prev => ({
@@ -377,6 +394,18 @@ export default function App() {
   const [authForm, setAuthForm] = useState({ name: '', email: '', username: '', password: '' });
   const [authError, setAuthError] = useState('');
   const [showProfileDropdown, setShowProfileDropdown] = useState(false);
+
+  // Admin Panel State
+  const [adminSubTab, setAdminSubTab] = useState('dashboard');
+  const [allOrders, setAllOrders] = useState([]);
+  const [allUsers, setAllUsers] = useState([]);
+  const [adminProductForm, setAdminProductForm] = useState({
+    name: '', category: 'CPU', price: '', stock: '', watts: '', image: '', specs: '', isPowerSupply: false
+  });
+  const [editingProduct, setEditingProduct] = useState(null);
+  const [showProductForm, setShowProductForm] = useState(false);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminMsg, setAdminMsg] = useState({ type: '', text: '' });
 
   // Orders and Tracking
   const [orders, setOrders] = useState([]);
@@ -447,18 +476,39 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
+        const isSuperAdmin = firebaseUser.email === 'maresj1411@gmail.com';
+        
         let userProfile = {
           name: firebaseUser.displayName || firebaseUser.email.split('@')[0],
           email: firebaseUser.email,
           username: firebaseUser.email.split('@')[0],
-          rank: 'Rig Builder Rookie',
-          avatarColor: 'from-purple-500 to-pink-500'
+          rank: isSuperAdmin ? 'Administrator' : 'Rig Builder Rookie',
+          avatarColor: isSuperAdmin ? 'from-purple-600 to-indigo-600' : 'from-purple-500 to-pink-500',
+          role: isSuperAdmin ? 'admin' : 'user'
         };
 
         try {
           const profileSnap = await getDoc(doc(db, 'users', firebaseUser.uid));
           if (profileSnap.exists()) {
             userProfile = profileSnap.data();
+            let needsUpdate = false;
+            
+            // Migrate legacy isAdmin to role
+            if (userProfile.isAdmin !== undefined) {
+               userProfile.role = userProfile.isAdmin ? 'admin' : 'user';
+               delete userProfile.isAdmin;
+               needsUpdate = true;
+            }
+
+            if (isSuperAdmin && userProfile.role !== 'admin') {
+              userProfile.role = 'admin';
+              userProfile.rank = 'Administrator';
+              userProfile.avatarColor = 'from-purple-600 to-indigo-600';
+              needsUpdate = true;
+            }
+            if (needsUpdate) {
+              await updateDoc(doc(db, 'users', firebaseUser.uid), userProfile);
+            }
           } else {
             // Write default profile on first registration
             await setDoc(doc(db, 'users', firebaseUser.uid), userProfile);
@@ -537,8 +587,9 @@ export default function App() {
           name: authForm.name,
           email: authForm.email,
           username: authForm.username || authForm.email.split('@')[0],
-          rank: 'Rig Builder Rookie',
-          avatarColor: 'from-purple-500 to-pink-500'
+          rank: authForm.email === 'maresj1411@gmail.com' ? 'Administrator' : 'Rig Builder Rookie',
+          avatarColor: authForm.email === 'maresj1411@gmail.com' ? 'from-purple-600 to-indigo-600' : 'from-purple-500 to-pink-500',
+          role: authForm.email === 'maresj1411@gmail.com' ? 'admin' : 'user'
         };
 
         await setDoc(doc(db, 'users', user.uid), userProfile);
@@ -553,10 +604,162 @@ export default function App() {
     }
   };
 
+  // ==========================================
+  // ADMIN: FETCH ALL ORDERS (real-time)
+  // ==========================================
+  useEffect(() => {
+    if (currentUser?.role !== 'admin' && currentUser?.role !== 'encargado') return;
+    const unsubAll = onSnapshot(collection(db, 'orders'), (snap) => {
+      const list = [];
+      snap.forEach(d => list.push(d.data()));
+      list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      setAllOrders(list);
+    });
+    return () => unsubAll();
+  }, [currentUser]);
+
+  // ==========================================
+  // ADMIN: FETCH ALL USERS (real-time, Admin only)
+  // ==========================================
+  useEffect(() => {
+    if (currentUser?.role !== 'admin') return;
+    const unsubAll = onSnapshot(collection(db, 'users'), (snap) => {
+      const list = [];
+      snap.forEach(d => list.push({ ...d.data(), id: d.id }));
+      setAllUsers(list);
+    });
+    return () => unsubAll();
+  }, [currentUser]);
+
+  // ==========================================
+  // ADMIN: ADD PRODUCT
+  // ==========================================
+  const handleAdminAddProduct = async (e) => {
+    e.preventDefault();
+    setAdminLoading(true);
+    setAdminMsg({ type: '', text: '' });
+    try {
+      const newId = Date.now();
+      const prod = {
+        id: newId,
+        name: adminProductForm.name.trim(),
+        category: adminProductForm.category,
+        price: parseFloat(adminProductForm.price),
+        stock: parseInt(adminProductForm.stock),
+        watts: parseInt(adminProductForm.watts) || 0,
+        image: adminProductForm.image.trim() || 'https://images.unsplash.com/photo-1591488320449-011701bb6704?w=400&q=80',
+        specs: adminProductForm.specs.trim(),
+        isPowerSupply: adminProductForm.category === 'PSU'
+      };
+      await setDoc(doc(db, 'products', newId.toString()), prod);
+      setProducts(prev => [...prev, prod].sort((a, b) => a.id - b.id));
+      setAdminProductForm({ name: '', category: 'CPU', price: '', stock: '', watts: '', image: '', specs: '', isPowerSupply: false });
+      setShowProductForm(false);
+      setAdminMsg({ type: 'success', text: `✅ Producto "${prod.name}" agregado correctamente.` });
+    } catch (err) {
+      setAdminMsg({ type: 'error', text: '❌ Error al agregar el producto: ' + err.message });
+    }
+    setAdminLoading(false);
+  };
+
+  // ==========================================
+  // ADMIN: EDIT PRODUCT
+  // ==========================================
+  const handleAdminEditProduct = async (e) => {
+    e.preventDefault();
+    if (!editingProduct) return;
+    setAdminLoading(true);
+    setAdminMsg({ type: '', text: '' });
+    try {
+      const updated = {
+        ...editingProduct,
+        name: adminProductForm.name.trim(),
+        category: adminProductForm.category,
+        price: parseFloat(adminProductForm.price),
+        stock: parseInt(adminProductForm.stock),
+        watts: parseInt(adminProductForm.watts) || 0,
+        image: adminProductForm.image.trim() || editingProduct.image,
+        specs: adminProductForm.specs.trim(),
+        isPowerSupply: adminProductForm.category === 'PSU'
+      };
+      await updateDoc(doc(db, 'products', editingProduct.id.toString()), updated);
+      setProducts(prev => prev.map(p => p.id === editingProduct.id ? updated : p));
+      setEditingProduct(null);
+      setShowProductForm(false);
+      setAdminProductForm({ name: '', category: 'CPU', price: '', stock: '', watts: '', image: '', specs: '', isPowerSupply: false });
+      setAdminMsg({ type: 'success', text: `✅ Producto "${updated.name}" actualizado correctamente.` });
+    } catch (err) {
+      setAdminMsg({ type: 'error', text: '❌ Error al actualizar: ' + err.message });
+    }
+    setAdminLoading(false);
+  };
+
+  // ==========================================
+  // ADMIN: DELETE PRODUCT
+  // ==========================================
+  const handleAdminDeleteProduct = async (product) => {
+    if (!window.confirm(`¿Eliminar "${product.name}"? Esta acción no se puede deshacer.`)) return;
+    setAdminMsg({ type: '', text: '' });
+    try {
+      await deleteDoc(doc(db, 'products', product.id.toString()));
+      setProducts(prev => prev.filter(p => p.id !== product.id));
+      setAdminMsg({ type: 'success', text: `🗑️ Producto "${product.name}" eliminado.` });
+    } catch (err) {
+      setAdminMsg({ type: 'error', text: '❌ Error al eliminar: ' + err.message });
+    }
+  };
+
+  // ==========================================
+  // ADMIN: UPDATE ORDER STATUS
+  // ==========================================
+  const handleAdminUpdateOrderStatus = async (orderId, newStatus) => {
+    const now = new Date();
+    const formattedDate = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+    const locations = { 1: 'Taller de Ensamblaje Central', 2: 'Taller de Calibración & Benchmarking', 3: 'Centro de Clasificación Express DHL', 4: 'Domicilio del Cliente' };
+    const descs = { 1: 'Pago aprobado. Su orden está lista para el taller de ensamblaje.', 2: 'Hardware ensamblado y configurado. Pruebas de estrés superadas.', 3: 'Paquete en tránsito vía aérea express a tu ciudad.', 4: 'Entregado y recibido a conformidad del usuario.' };
+    const order = allOrders.find(o => o.id === orderId);
+    if (!order) return;
+    const updatedHistory = order.history.map(h => h.step <= newStatus
+      ? { ...h, time: h.time === '--' ? formattedDate : h.time, location: h.location === '--' ? locations[h.step] : h.location, desc: descs[h.step], completed: true }
+      : { ...h, time: '--', location: '--', completed: false }
+    );
+    try {
+      await updateDoc(doc(db, 'orders', orderId), { status: newStatus, history: updatedHistory });
+    } catch (err) {
+      alert('Error al actualizar orden: ' + err.message);
+    }
+  };
+
+  const handleAdminUpdateUserRole = async (userId, newRole) => {
+    if (currentUser?.role !== 'admin') return;
+    try {
+      let newRank = 'Rig Builder Rookie';
+      let newColor = 'from-purple-500 to-pink-500';
+      
+      if (newRole === 'admin') {
+        newRank = 'Administrator';
+        newColor = 'from-purple-600 to-indigo-600';
+      } else if (newRole === 'encargado') {
+        newRank = 'Encargado de Catálogo';
+        newColor = 'from-cyan-500 to-blue-500';
+      }
+
+      await updateDoc(doc(db, 'users', userId), { 
+        role: newRole,
+        rank: newRank,
+        avatarColor: newColor
+      });
+      alert('Rol de usuario actualizado con éxito.');
+    } catch (err) {
+      alert('Error al actualizar rol de usuario: ' + err.message);
+    }
+  };
+
   const handleLogout = async () => {
     try {
       await signOut(auth);
       setCurrentUser(null);
+      setIsAdminMode(false);
       setShowProfileDropdown(false);
     } catch (err) {
       console.error("Logout error:", err);
@@ -576,8 +779,9 @@ export default function App() {
           name: user.displayName || user.email.split('@')[0],
           email: user.email,
           username: user.email.split('@')[0],
-          rank: 'Rig Builder Rookie',
-          avatarColor: 'from-cyan-500 to-blue-500'
+          rank: user.email === 'maresj1411@gmail.com' ? 'Administrator' : 'Rig Builder Rookie',
+          avatarColor: user.email === 'maresj1411@gmail.com' ? 'from-purple-600 to-indigo-600' : 'from-cyan-500 to-blue-500',
+          role: user.email === 'maresj1411@gmail.com' ? 'admin' : 'user'
         };
         await setDoc(doc(db, 'users', user.uid), userProfile);
       }
@@ -953,6 +1157,21 @@ export default function App() {
                 <span>Mis Compras</span>
               </button>
             )}
+
+            {/* Admin Panel link */}
+            {(currentUser?.role === 'admin' || currentUser?.role === 'encargado') && (
+              <button 
+                onClick={() => setActiveTab('admin')}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center space-x-2 ${
+                  activeTab === 'admin' 
+                    ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' 
+                    : 'hover:bg-purple-500/10 hover:text-purple-300 border border-transparent text-purple-400'
+                }`}
+              >
+                <ShieldCheck className="h-4 w-4" />
+                <span>Admin</span>
+              </button>
+            )}
           </nav>
 
           {/* User Section & Cart */}
@@ -1001,6 +1220,18 @@ export default function App() {
                       <History className="h-4 w-4 text-cyan-500" />
                       <span>Mis Compras</span>
                     </button>
+                    {(currentUser?.role === 'admin' || currentUser?.role === 'encargado') && (
+                      <button
+                        onClick={() => {
+                          setActiveTab('admin');
+                          setShowProfileDropdown(false);
+                        }}
+                        className="w-full text-left p-2 rounded-lg hover:bg-purple-500/10 flex items-center space-x-2 text-purple-300 transition-colors"
+                      >
+                        <ShieldCheck className="h-4 w-4" />
+                        <span>Panel de Admin</span>
+                      </button>
+                    )}
                     <button
                       onClick={handleLogout}
                       className="w-full text-left p-2 rounded-lg hover:bg-red-500/10 flex items-center space-x-2 text-red-400 transition-colors mt-1"
@@ -2043,6 +2274,490 @@ export default function App() {
           </div>
         )}
 
+        {/* ==========================================
+            VIEW 6: ADMIN PANEL
+            ========================================== */}
+        {activeTab === 'admin' && (currentUser?.role === 'admin' || currentUser?.role === 'encargado') && (
+          <div className="space-y-8 animate-fadeIn">
+            {/* Admin Header */}
+            <div className="relative overflow-hidden rounded-3xl border border-purple-500/20 glass-panel p-8 flex flex-col md:flex-row md:items-center justify-between gap-6">
+              <div className="absolute top-0 right-0 w-80 h-80 bg-purple-500/8 rounded-full blur-[80px] pointer-events-none"></div>
+              <div className="space-y-2">
+                <span className="inline-flex items-center px-3.5 py-1 rounded-full text-xs font-semibold bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                  <ShieldCheck className="h-3 w-3 mr-1.5" /> PANEL DE ADMINISTRACIÓN
+                </span>
+                <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white leading-none">
+                  CONTROL <span className="bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-500">NEXUS</span>
+                </h1>
+                <p className="text-slate-400 text-sm">Gestiona productos, inventario y órdenes en tiempo real.</p>
+              </div>
+              {/* Stats row */}
+              <div className="flex gap-4 shrink-0 flex-wrap">
+                <div className="bg-[#151C2C] border border-white/5 rounded-2xl px-5 py-4 text-center min-w-[90px]">
+                  <span className="text-2xl font-black text-white">{products.length}</span>
+                  <p className="text-[10px] text-slate-500 uppercase tracking-wider font-bold mt-0.5">Productos</p>
+                </div>
+                <div className="bg-[#151C2C] border border-white/5 rounded-2xl px-5 py-4 text-center min-w-[90px]">
+                  <span className="text-2xl font-black text-cyan-400">{allOrders.length}</span>
+                  <p className="text-[10px] text-slate-500 uppercase tracking-wider font-bold mt-0.5">Pedidos</p>
+                </div>
+                <div className="bg-[#151C2C] border border-white/5 rounded-2xl px-5 py-4 text-center min-w-[90px]">
+                  <span className="text-2xl font-black text-emerald-400">${allOrders.reduce((s, o) => s + (o.total || 0), 0).toFixed(0)}</span>
+                  <p className="text-[10px] text-slate-500 uppercase tracking-wider font-bold mt-0.5">Ventas</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Sub-Tab navigation */}
+            <div className="flex items-center space-x-2 border-b border-white/5 pb-0.5">
+              {[
+                ...(currentUser?.role === 'admin' ? [{ key: 'dashboard', label: 'Dashboard', icon: BarChart3 }] : []),
+                { key: 'products', label: 'Productos', icon: Package },
+                ...(currentUser?.role === 'admin' ? [
+                  { key: 'orders', label: 'Pedidos', icon: ListOrdered },
+                  { key: 'users', label: 'Usuarios', icon: Users }
+                ] : [])
+              ].map(({ key, label, icon: Icon }) => (
+                <button
+                  key={key}
+                  onClick={() => { setAdminSubTab(key); setAdminMsg({ type: '', text: '' }); }}
+                  className={`flex items-center space-x-2 px-5 py-2.5 rounded-t-lg text-xs font-bold transition-all border-b-2 ${
+                    adminSubTab === key
+                      ? 'text-purple-300 border-purple-400 bg-purple-500/10'
+                      : 'text-slate-400 border-transparent hover:text-white hover:border-white/20'
+                  }`}
+                >
+                  <Icon className="h-4 w-4" />
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Admin notification bar */}
+            {adminMsg.text && (
+              <div className={`flex items-center space-x-2 p-3.5 rounded-xl border text-xs font-semibold ${
+                adminMsg.type === 'success'
+                  ? 'bg-emerald-950/30 border-emerald-500/20 text-emerald-400'
+                  : 'bg-red-950/30 border-red-500/20 text-red-400'
+              }`}>
+                {adminMsg.type === 'success' ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : <AlertTriangle className="h-4 w-4 shrink-0" />}
+                <span>{adminMsg.text}</span>
+                <button onClick={() => setAdminMsg({ type: '', text: '' })} className="ml-auto"><X className="h-4 w-4" /></button>
+              </div>
+            )}
+
+            {/* ====== DASHBOARD SUB-TAB ====== */}
+            {adminSubTab === 'dashboard' && (
+              <div className="space-y-6">
+                <h2 className="text-lg font-black text-white flex items-center space-x-2"><TrendingUp className="h-5 w-5 text-purple-400" /><span>Resumen de Ventas</span></h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {/* Orders by status */}
+                  {[['Recibido', 1, 'text-cyan-400', 'bg-cyan-500/10 border-cyan-500/20'], ['En Ensamblaje', 2, 'text-yellow-400', 'bg-yellow-500/10 border-yellow-500/20'], ['En Tránsito', 3, 'text-orange-400', 'bg-orange-500/10 border-orange-500/20'], ['Entregado', 4, 'text-emerald-400', 'bg-emerald-500/10 border-emerald-500/20']].map(([label, status, color, bg]) => (
+                    <div key={status} className={`p-5 rounded-2xl border glass-panel ${bg} flex items-center justify-between`}>
+                      <div>
+                        <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">{label}</p>
+                        <p className={`text-3xl font-black mt-1 ${color}`}>{allOrders.filter(o => o.status === status).length}</p>
+                      </div>
+                      <PackageCheck className={`h-8 w-8 opacity-30 ${color}`} />
+                    </div>
+                  ))}
+                  <div className="p-5 rounded-2xl border border-purple-500/20 bg-purple-500/5 glass-panel flex items-center justify-between">
+                    <div>
+                      <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Stock bajo (≤5)</p>
+                      <p className="text-3xl font-black mt-1 text-red-400">{products.filter(p => p.stock <= 5).length}</p>
+                    </div>
+                    <AlertTriangle className="h-8 w-8 opacity-30 text-red-400" />
+                  </div>
+                  <div className="p-5 rounded-2xl border border-white/5 glass-panel flex items-center justify-between">
+                    <div>
+                      <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Ingresos totales</p>
+                      <p className="text-2xl font-black mt-1 text-white">${allOrders.reduce((s, o) => s + (o.total || 0), 0).toLocaleString('es-MX', { minimumFractionDigits: 2 })}</p>
+                    </div>
+                    <TrendingUp className="h-8 w-8 opacity-20 text-white" />
+                  </div>
+                </div>
+
+                {/* Recent orders mini-table */}
+                <div className="rounded-2xl border border-white/5 bg-[#151C2C]/40 overflow-hidden">
+                  <div className="p-4 border-b border-white/5 flex items-center justify-between">
+                    <h3 className="font-extrabold text-white text-sm flex items-center space-x-2"><ListOrdered className="h-4 w-4 text-purple-400" /><span>Últimos Pedidos</span></h3>
+                    <button onClick={() => setAdminSubTab('orders')} className="text-[10px] text-purple-400 hover:underline font-bold">Ver todos →</button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-[#0B0F19]/60">
+                        <tr>
+                          {['Código', 'Cliente', 'Total', 'Estado', 'Fecha'].map(h => (
+                            <th key={h} className="px-4 py-3 text-left text-[10px] uppercase tracking-widest text-slate-500 font-extrabold">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/3">
+                        {allOrders.slice(0, 5).map(order => (
+                          <tr key={order.id} className="hover:bg-white/2 transition-colors">
+                            <td className="px-4 py-3 font-mono text-cyan-400 font-bold">{order.id}</td>
+                            <td className="px-4 py-3 text-slate-300">{order.buyerName}</td>
+                            <td className="px-4 py-3 font-bold text-white">${order.total?.toFixed(2)}</td>
+                            <td className="px-4 py-3">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                order.status === 4 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                : order.status === 3 ? 'bg-orange-500/10 text-orange-400 border-orange-500/20'
+                                : order.status === 2 ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
+                                : 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20'
+                              }`}>
+                                {['', 'Recibido', 'Ensamblaje', 'En Tránsito', 'Entregado'][order.status]}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-slate-500 font-mono">{order.createdAt?.slice(0, 10)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {allOrders.length === 0 && (
+                      <div className="text-center py-10 text-slate-600 text-xs">Sin pedidos registrados aún.</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ====== PRODUCTS SUB-TAB ====== */}
+            {adminSubTab === 'products' && (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-black text-white flex items-center space-x-2"><Package className="h-5 w-5 text-purple-400" /><span>Gestión de Productos</span></h2>
+                  <button
+                    onClick={() => {
+                      setEditingProduct(null);
+                      setAdminProductForm({ name: '', category: 'CPU', price: '', stock: '', watts: '', image: '', specs: '', isPowerSupply: false });
+                      setShowProductForm(v => !v);
+                    }}
+                    className="flex items-center space-x-2 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg"
+                  >
+                    <PlusCircle className="h-4 w-4" />
+                    <span>Agregar Producto</span>
+                  </button>
+                </div>
+
+                {/* Product Form (Add/Edit) */}
+                {showProductForm && (
+                  <div className="rounded-2xl border border-purple-500/20 bg-[#151C2C] p-6 space-y-5 animate-zoomIn">
+                    <h3 className="font-extrabold text-white text-sm flex items-center space-x-2">
+                      {editingProduct ? <Edit3 className="h-4 w-4 text-yellow-400" /> : <PlusCircle className="h-4 w-4 text-purple-400" />}
+                      <span>{editingProduct ? `Editar: ${editingProduct.name}` : 'Nuevo Producto'}</span>
+                    </h3>
+                    <form onSubmit={editingProduct ? handleAdminEditProduct : handleAdminAddProduct} className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                      {/* Name */}
+                      <div className="space-y-1.5 md:col-span-2">
+                        <label className="text-slate-400 font-semibold flex items-center space-x-1.5"><Tag className="h-3.5 w-3.5" /><span>Nombre del producto *</span></label>
+                        <input
+                          required type="text" placeholder="Ej: AMD Ryzen 9 7950X3D"
+                          value={adminProductForm.name}
+                          onChange={e => setAdminProductForm({ ...adminProductForm, name: e.target.value })}
+                          className="w-full px-3 py-2.5 bg-[#0B0F19] border border-white/5 rounded-xl text-white focus:border-purple-500/40 focus:outline-none"
+                        />
+                      </div>
+                      {/* Category */}
+                      <div className="space-y-1.5">
+                        <label className="text-slate-400 font-semibold flex items-center space-x-1.5"><Filter className="h-3.5 w-3.5" /><span>Categoría *</span></label>
+                        <select
+                          required
+                          value={adminProductForm.category}
+                          onChange={e => setAdminProductForm({ ...adminProductForm, category: e.target.value, isPowerSupply: e.target.value === 'PSU' })}
+                          className="w-full px-3 py-2.5 bg-[#0B0F19] border border-white/5 rounded-xl text-white focus:border-purple-500/40 focus:outline-none"
+                        >
+                          {['CPU', 'Motherboard', 'RAM', 'GPU', 'Storage', 'PSU', 'Case'].map(c => (
+                            <option key={c} value={c}>{c}</option>
+                          ))}
+                        </select>
+                      </div>
+                      {/* Price */}
+                      <div className="space-y-1.5">
+                        <label className="text-slate-400 font-semibold flex items-center space-x-1.5"><CreditCard className="h-3.5 w-3.5" /><span>Precio (USD) *</span></label>
+                        <input
+                          required type="number" min="0" step="0.01" placeholder="0.00"
+                          value={adminProductForm.price}
+                          onChange={e => setAdminProductForm({ ...adminProductForm, price: e.target.value })}
+                          className="w-full px-3 py-2.5 bg-[#0B0F19] border border-white/5 rounded-xl text-white focus:border-purple-500/40 focus:outline-none"
+                        />
+                      </div>
+                      {/* Stock */}
+                      <div className="space-y-1.5">
+                        <label className="text-slate-400 font-semibold flex items-center space-x-1.5"><Database className="h-3.5 w-3.5" /><span>Stock (unidades) *</span></label>
+                        <input
+                          required type="number" min="0" placeholder="0"
+                          value={adminProductForm.stock}
+                          onChange={e => setAdminProductForm({ ...adminProductForm, stock: e.target.value })}
+                          className="w-full px-3 py-2.5 bg-[#0B0F19] border border-white/5 rounded-xl text-white focus:border-purple-500/40 focus:outline-none"
+                        />
+                      </div>
+                      {/* Watts */}
+                      <div className="space-y-1.5">
+                        <label className="text-slate-400 font-semibold flex items-center space-x-1.5"><Zap className="h-3.5 w-3.5" /><span>Watts / TDP</span></label>
+                        <input
+                          type="number" min="0" placeholder="0"
+                          value={adminProductForm.watts}
+                          onChange={e => setAdminProductForm({ ...adminProductForm, watts: e.target.value })}
+                          className="w-full px-3 py-2.5 bg-[#0B0F19] border border-white/5 rounded-xl text-white focus:border-purple-500/40 focus:outline-none"
+                        />
+                      </div>
+                      {/* Image URL */}
+                      <div className="space-y-1.5 md:col-span-2">
+                        <label className="text-slate-400 font-semibold flex items-center space-x-1.5"><Image className="h-3.5 w-3.5" /><span>URL de Imagen</span></label>
+                        <input
+                          type="url" placeholder="https://images.unsplash.com/..."
+                          value={adminProductForm.image}
+                          onChange={e => setAdminProductForm({ ...adminProductForm, image: e.target.value })}
+                          className="w-full px-3 py-2.5 bg-[#0B0F19] border border-white/5 rounded-xl text-white focus:border-purple-500/40 focus:outline-none"
+                        />
+                        {adminProductForm.image && (
+                          <div className="mt-2 rounded-lg overflow-hidden border border-white/5 w-20 h-20">
+                            <img src={adminProductForm.image} alt="preview" className="w-full h-full object-cover" onError={e => e.target.style.display='none'} />
+                          </div>
+                        )}
+                      </div>
+                      {/* Specs */}
+                      <div className="space-y-1.5 md:col-span-2">
+                        <label className="text-slate-400 font-semibold flex items-center space-x-1.5"><FileText className="h-3.5 w-3.5" /><span>Especificaciones *</span></label>
+                        <textarea
+                          required rows={2} placeholder="Ej: Gama Alta: 16 Cores / 32 Threads, 5.7GHz Boost..."
+                          value={adminProductForm.specs}
+                          onChange={e => setAdminProductForm({ ...adminProductForm, specs: e.target.value })}
+                          className="w-full px-3 py-2.5 bg-[#0B0F19] border border-white/5 rounded-xl text-white focus:border-purple-500/40 focus:outline-none resize-none"
+                        />
+                      </div>
+                      {/* Action buttons */}
+                      <div className="md:col-span-2 flex gap-3 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => { setShowProductForm(false); setEditingProduct(null); }}
+                          className="flex-1 py-3 bg-[#0B0F19] border border-white/5 hover:border-white/10 text-slate-300 hover:text-white rounded-xl font-bold transition-all flex items-center justify-center space-x-2"
+                        >
+                          <XCircle className="h-4 w-4" /><span>Cancelar</span>
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={adminLoading}
+                          className="flex-1 py-3 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white rounded-xl font-bold transition-all flex items-center justify-center space-x-2 disabled:opacity-60"
+                        >
+                          <Save className="h-4 w-4" />
+                          <span>{adminLoading ? 'Guardando...' : editingProduct ? 'Guardar Cambios' : 'Agregar Producto'}</span>
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                )}
+
+                {/* Products Table */}
+                <div className="rounded-2xl border border-white/5 bg-[#151C2C]/40 overflow-hidden">
+                  <div className="p-4 border-b border-white/5">
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">{products.length} productos en catálogo</p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-[#0B0F19]/60">
+                        <tr>
+                          {['Imagen', 'Nombre', 'Cat.', 'Precio', 'Stock', 'Watts', 'Acciones'].map(h => (
+                            <th key={h} className="px-4 py-3 text-left text-[10px] uppercase tracking-widest text-slate-500 font-extrabold">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/3">
+                        {products.map(product => (
+                          <tr key={product.id} className="hover:bg-white/2 transition-colors group">
+                            <td className="px-4 py-3">
+                              <img src={product.image} alt={product.name} className="w-10 h-10 object-cover rounded-lg border border-white/5 bg-slate-950" />
+                            </td>
+                            <td className="px-4 py-3">
+                              <p className="font-bold text-white truncate max-w-[180px]">{product.name}</p>
+                              <p className="text-slate-600 text-[10px] truncate max-w-[180px]">{product.specs?.slice(0, 50)}…</p>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className="px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 text-[10px] font-bold">{product.category}</span>
+                            </td>
+                            <td className="px-4 py-3 font-black text-white">${product.price?.toFixed(2)}</td>
+                            <td className="px-4 py-3">
+                              <span className={`font-bold ${product.stock <= 5 ? 'text-red-400' : product.stock <= 15 ? 'text-yellow-400' : 'text-emerald-400'}`}>{product.stock}</span>
+                            </td>
+                            <td className="px-4 py-3 text-slate-400">{product.watts}W</td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center space-x-2">
+                                <button
+                                  onClick={() => {
+                                    setEditingProduct(product);
+                                    setAdminProductForm({
+                                      name: product.name,
+                                      category: product.category,
+                                      price: product.price?.toString(),
+                                      stock: product.stock?.toString(),
+                                      watts: product.watts?.toString(),
+                                      image: product.image,
+                                      specs: product.specs,
+                                      isPowerSupply: product.isPowerSupply || false
+                                    });
+                                    setShowProductForm(true);
+                                    setAdminMsg({ type: '', text: '' });
+                                  }}
+                                  className="p-1.5 rounded-lg bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-400 border border-yellow-500/20 transition-all"
+                                  title="Editar"
+                                >
+                                  <Edit3 className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => handleAdminDeleteProduct(product)}
+                                  className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-all"
+                                  title="Eliminar"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {products.length === 0 && (
+                      <div className="text-center py-10 text-slate-600 text-xs">No hay productos todavía.</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ====== ORDERS SUB-TAB ====== */}
+            {adminSubTab === 'orders' && currentUser?.role === 'admin' && (
+              <div className="space-y-6">
+                <h2 className="text-lg font-black text-white flex items-center space-x-2"><ListOrdered className="h-5 w-5 text-purple-400" /><span>Todos los Pedidos ({allOrders.length})</span></h2>
+                {allOrders.length === 0 ? (
+                  <div className="text-center py-20 border border-dashed border-white/5 rounded-2xl text-slate-600 text-xs">Sin pedidos registrados.</div>
+                ) : (
+                  <div className="space-y-4">
+                    {allOrders.map(order => (
+                      <div key={order.id} className="p-5 rounded-2xl border border-white/5 bg-[#151C2C]/40 glass-panel space-y-4">
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                          <div className="space-y-0.5">
+                            <div className="flex items-center space-x-2">
+                              <span className="font-mono font-black text-white text-sm">{order.id}</span>
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                order.status === 4 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                : order.status === 3 ? 'bg-orange-500/10 text-orange-400 border-orange-500/20'
+                                : order.status === 2 ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
+                                : 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20'
+                              }`}>
+                                {['', 'Recibido', 'En Ensamblaje', 'En Tránsito', 'Entregado'][order.status]}
+                              </span>
+                            </div>
+                            <p className="text-slate-400 text-xs"><span className="text-slate-500">Cliente:</span> {order.buyerName} — <span className="text-slate-500">Email:</span> {order.email}</p>
+                            <p className="text-slate-500 text-[10px] font-mono">{order.createdAt}</p>
+                          </div>
+                          <div className="flex flex-col items-end space-y-2">
+                            <span className="font-black text-white">${order.total?.toFixed(2)}</span>
+                            {/* Status changer */}
+                            <div className="flex items-center space-x-1">
+                              <span className="text-[10px] text-slate-500 font-bold">Cambiar estado:</span>
+                              {[1, 2, 3, 4].map(s => (
+                                <button
+                                  key={s}
+                                  onClick={() => handleAdminUpdateOrderStatus(order.id, s)}
+                                  disabled={order.status === s}
+                                  className={`w-6 h-6 rounded-md text-[10px] font-black transition-all border ${
+                                    order.status === s
+                                      ? 'bg-purple-500/30 text-purple-300 border-purple-500/40 cursor-default'
+                                      : 'bg-white/5 hover:bg-purple-500/20 text-slate-400 hover:text-purple-300 border-white/10 hover:border-purple-500/30'
+                                  }`}
+                                  title={['', 'Recibido', 'En Ensamblaje', 'En Tránsito', 'Entregado'][s]}
+                                >
+                                  {s}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        {/* Items */}
+                        <div className="border-t border-white/5 pt-3 space-y-1">
+                          {order.items?.map((item, idx) => (
+                            <div key={idx} className="flex justify-between text-xs text-slate-400">
+                              <span>{item.name} <strong className="text-cyan-400/80">x{item.quantity}</strong></span>
+                              <span className="font-mono">${(item.price * item.quantity).toFixed(2)}</span>
+                            </div>
+                          ))}
+                          <div className="flex justify-between text-xs pt-2 border-t border-white/5 font-black">
+                            <span className="text-slate-500">Total c/IVA</span>
+                            <span className="text-white">${order.total?.toFixed(2)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ====== USERS SUB-TAB ====== */}
+            {adminSubTab === 'users' && currentUser?.role === 'admin' && (
+              <div className="space-y-6">
+                <h2 className="text-lg font-black text-white flex items-center space-x-2"><Users className="h-5 w-5 text-purple-400" /><span>Gestión de Usuarios ({allUsers.length})</span></h2>
+                
+                <div className="rounded-2xl border border-white/5 bg-[#151C2C]/40 overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-[#0B0F19]/60">
+                        <tr>
+                          {['Usuario', 'Email', 'Rol', 'Acciones'].map(h => (
+                            <th key={h} className="px-4 py-3 text-left text-[10px] uppercase tracking-widest text-slate-500 font-extrabold">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/3">
+                        {allUsers.map(user => (
+                          <tr key={user.id} className="hover:bg-white/2 transition-colors">
+                            <td className="px-4 py-3">
+                              <div className="flex items-center space-x-3">
+                                <div className={`w-8 h-8 rounded-full bg-gradient-to-tr ${user.avatarColor || 'from-slate-700 to-slate-800'} flex items-center justify-center text-[10px] text-white font-extrabold uppercase shrink-0`}>
+                                  {user.name?.[0] || '?'}
+                                </div>
+                                <div>
+                                  <p className="font-bold text-white truncate max-w-[150px]">{user.name}</p>
+                                  <p className="text-[10px] text-slate-500 truncate">{user.username}</p>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3 text-slate-400">{user.email}</td>
+                            <td className="px-4 py-3">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                user.role === 'admin' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20'
+                                : user.role === 'encargado' ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20'
+                                : 'bg-slate-500/10 text-slate-400 border-slate-500/20'
+                              }`}>
+                                {user.role === 'admin' ? 'Superadmin' : user.role === 'encargado' ? 'Encargado' : 'Usuario'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center space-x-2">
+                                <select 
+                                  value={user.role || 'user'}
+                                  onChange={(e) => handleAdminUpdateUserRole(user.id, e.target.value)}
+                                  disabled={user.email === 'maresj1411@gmail.com'}
+                                  className="px-2 py-1.5 bg-[#0B0F19] border border-white/5 rounded-lg text-white text-[10px] focus:border-purple-500/40 focus:outline-none disabled:opacity-50"
+                                >
+                                  <option value="user">Usuario</option>
+                                  <option value="encargado">Encargado</option>
+                                  <option value="admin">Administrador</option>
+                                </select>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+          </div>
+        )}
+
       </main>
 
       {/* ==========================================
@@ -2154,10 +2869,12 @@ export default function App() {
               <div className="inline-flex bg-cyan-500/10 p-2.5 rounded-xl border border-cyan-500/20 mb-1.5">
                 <User className="h-5.5 w-5.5 text-cyan-400" />
               </div>
-              <h3 className="text-lg font-black text-white tracking-widest uppercase">
-                {authMode === 'login' ? 'INGRESO A LA RED' : 'REGISTRO DE USUARIO'}
+              <h3 className="text-xl font-extrabold text-white tracking-tight uppercase">
+                {authMode === 'login' ? 'INICIAR SESIÓN' : 'CREAR CUENTA'}
               </h3>
-              <p className="text-[10px] text-slate-500 uppercase tracking-widest">Nexus Rig Builders Club</p>
+              <p className="text-xs text-slate-400">
+                {authMode === 'login' ? 'Ingresa a tu cuenta de Nexus Hardware' : 'Crea tu cuenta de Nexus Hardware'}
+              </p>
             </div>
 
             {authError && (
@@ -2236,7 +2953,7 @@ export default function App() {
                 className="w-full py-3 bg-gradient-to-r from-cyan-500 to-purple-600 hover:from-cyan-400 hover:to-purple-500 text-white rounded-xl font-bold transition-all shadow-neon-cyan flex items-center justify-center space-x-1.5 mt-2"
               >
                 {authMode === 'login' ? <User className="h-4.5 w-4.5" /> : <UserPlus className="h-4.5 w-4.5" />}
-                <span>{authMode === 'login' ? 'Conectar' : 'Registrar Cuenta'}</span>
+                <span>{authMode === 'login' ? 'Iniciar Sesión' : 'Crear Cuenta'}</span>
               </button>
 
               <div className="relative flex py-2 items-center text-slate-500 text-[10px] uppercase font-bold tracking-widest">
