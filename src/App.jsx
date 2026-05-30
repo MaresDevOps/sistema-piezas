@@ -38,10 +38,32 @@ import {
   Printer
 } from 'lucide-react';
 
+// Import Firebase Services
+import { auth, db } from './firebase';
+import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signOut, 
+  onAuthStateChanged, 
+  updateProfile 
+} from 'firebase/auth';
+import { 
+  doc, 
+  getDoc, 
+  getDocs, 
+  setDoc, 
+  updateDoc, 
+  collection, 
+  query, 
+  where, 
+  onSnapshot, 
+  writeBatch 
+} from 'firebase/firestore';
+
 // ==========================================
-// HARDWARE DATABASE: 21 Premium Components
+// SEED DATA: 21 Premium Components
 // ==========================================
-const PRODUCTS = [
+const SEED_PRODUCTS = [
   // CPUs
   {
     id: 1,
@@ -281,6 +303,8 @@ export default function App() {
   const [justAddedProduct, setJustAddedProduct] = useState(null);
 
   // Catalog
+  const [products, setProducts] = useState([]);
+  const [loadingProducts, setLoadingProducts] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState('Todas');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState('default');
@@ -312,78 +336,122 @@ export default function App() {
   const [trackingError, setTrackingError] = useState('');
   const [newOrderSuccess, setNewOrderSuccess] = useState(null);
 
-  // Invoicing States
+  // Invoicing
   const [invoiceSearchCode, setInvoiceSearchCode] = useState('');
   const [invoiceSearchError, setInvoiceSearchError] = useState('');
   const [selectedOrderToBill, setSelectedOrderToBill] = useState(null);
   const [billingForm, setBillingForm] = useState({ rfc: '', razonSocial: '', cp: '', regimen: '601', usoCfdi: 'G03' });
   const [generatedInvoice, setGeneratedInvoice] = useState(null);
   
-  // Custom fixed pattern for simulated QR code cells (144 cells for 12x12 grid)
+  // Simulated QR pattern
   const [qrPattern] = useState(() => 
     Array.from({ length: 144 }).map((_, idx) => {
-      // Create classic QR position blocks in corners
       const row = Math.floor(idx / 12);
       const col = idx % 12;
-      // Top-Left (4x4)
       if (row < 4 && col < 4) return (row === 0 || row === 3 || col === 0 || col === 3);
-      // Top-Right (4x4)
       if (row < 4 && col >= 8) return (row === 0 || row === 3 || col === 8 || col === 11);
-      // Bottom-Left (4x4)
       if (row >= 8 && col < 4) return (row === 8 || row === 11 || col === 0 || col === 3);
-      // Random content in-between
       return Math.sin(idx * 4.3) > 0;
     })
   );
 
-  // Initialize Users, Orders & Session
+  // ==========================================
+  // FIRESTORE SEEDING & FETCHING
+  // ==========================================
   useEffect(() => {
-    const savedUsers = localStorage.getItem('nexus_users');
-    if (!savedUsers) {
-      const defaultUsers = [
-        { name: 'Alex "Cyber" Hunter', email: 'alex@nexus.com', username: 'cyber_gamer', password: 'nexus123', rank: 'Rig Architect Elite', avatarColor: 'from-cyan-400 to-blue-500' }
-      ];
-      localStorage.setItem('nexus_users', JSON.stringify(defaultUsers));
-    }
-
-    const savedOrders = localStorage.getItem('nexus_orders');
-    if (!savedOrders) {
-      const defaultOrders = [
-        {
-          id: 'NEX-83FA9A',
-          buyerName: 'Alex "Cyber" Hunter',
-          email: 'alex@nexus.com',
-          address: 'Av. de los Insurgentes Sur 1457, CDMX',
-          items: [
-            { id: 1, name: 'AMD Ryzen 9 7950X3D', price: 599.00, quantity: 1, category: 'CPU' },
-            { id: 4, name: 'NVIDIA GeForce RTX 4090 Founders Edition', price: 1599.00, quantity: 1, category: 'GPU' }
-          ],
-          subtotal: 2198.00,
-          tax: 351.68,
-          total: 2549.68,
-          createdAt: '2026-05-28 14:32:10',
-          status: 3,
-          history: [
-            { step: 1, title: 'Pedido Recibido', desc: 'Hardware validado en bodega central y pago conciliado.', time: '2026-05-28 14:32', location: 'Centro logístico, CDMX', completed: true },
-            { step: 2, title: 'En Ensamblaje / Empaque', desc: 'Pruebas térmicas de componentes realizadas exitosamente.', time: '2026-05-28 18:15', location: 'Taller Técnico Principal', completed: true },
-            { step: 3, title: 'En Tránsito', desc: 'Envío express terrestre asignado a paquetería.', time: '2026-05-29 09:10', location: 'Centro de Clasificación Logística', completed: true },
-            { step: 4, title: 'Entregado', desc: 'Pendiente de llegada a domicilio.', time: '--', location: '--', completed: false }
-          ]
+    const fetchProducts = async () => {
+      try {
+        const querySnapshot = await getDocs(collection(db, 'products'));
+        if (querySnapshot.empty) {
+          // No products in Firestore, let's seed them
+          console.log("Seeding initial products to Firestore...");
+          const batch = writeBatch(db);
+          SEED_PRODUCTS.forEach((prod) => {
+            const docRef = doc(collection(db, 'products'), prod.id.toString());
+            batch.set(docRef, prod);
+          });
+          await batch.commit();
+          setProducts(SEED_PRODUCTS);
+        } else {
+          const list = [];
+          querySnapshot.forEach((docSnap) => {
+            list.push(docSnap.data());
+          });
+          list.sort((a, b) => a.id - b.id);
+          setProducts(list);
         }
-      ];
-      localStorage.setItem('nexus_orders', JSON.stringify(defaultOrders));
-      setOrders(defaultOrders);
-    } else {
-      setOrders(JSON.parse(savedOrders));
-    }
+      } catch (err) {
+        console.error("Error loading products from Firestore:", err);
+        // Fallback to local SEED_PRODUCTS if blocked by firewall/rules
+        setProducts(SEED_PRODUCTS);
+      } finally {
+        setLoadingProducts(false);
+      }
+    };
 
-    const session = localStorage.getItem('nexus_current_user');
-    if (session) {
-      setCurrentUser(JSON.parse(session));
-    }
+    fetchProducts();
   }, []);
 
-  // Timer for cart feedback
+  // ==========================================
+  // REAL AUTHENTICATION LISTENER
+  // ==========================================
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        let userProfile = {
+          name: firebaseUser.displayName || firebaseUser.email.split('@')[0],
+          email: firebaseUser.email,
+          username: firebaseUser.email.split('@')[0],
+          rank: 'Rig Builder Rookie',
+          avatarColor: 'from-purple-500 to-pink-500'
+        };
+
+        try {
+          const profileSnap = await getDoc(doc(db, 'users', firebaseUser.uid));
+          if (profileSnap.exists()) {
+            userProfile = profileSnap.data();
+          } else {
+            // Write default profile on first registration
+            await setDoc(doc(db, 'users', firebaseUser.uid), userProfile);
+          }
+        } catch (err) {
+          console.error("Could not fetch user profile from Firestore:", err);
+        }
+        
+        setCurrentUser({ ...userProfile, uid: firebaseUser.uid });
+      } else {
+        setCurrentUser(null);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // ==========================================
+  // REAL-TIME ORDERS LISTENER (MIS COMPRAS)
+  // ==========================================
+  useEffect(() => {
+    if (!currentUser) {
+      setOrders([]);
+      return;
+    }
+
+    const q = query(collection(db, 'orders'), where('buyerUid', '==', currentUser.uid));
+    const unsubscribe = onSnapshot(q, (querySnapshot) => {
+      const ordersList = [];
+      querySnapshot.forEach((docSnap) => {
+        ordersList.push(docSnap.data());
+      });
+      ordersList.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      setOrders(ordersList);
+    }, (err) => {
+      console.error("Error subscribing to user orders:", err);
+    });
+
+    return () => unsubscribe();
+  }, [currentUser]);
+
+  // HMR timer for cart add animations
   useEffect(() => {
     if (justAddedProduct) {
       const timer = setTimeout(() => setJustAddedProduct(null), 1000);
@@ -392,56 +460,58 @@ export default function App() {
   }, [justAddedProduct]);
 
   // ==========================================
-  // AUTHENTICATION LOGIC
+  // REGISTRATION & LOGIN SUBMISSIONS
   // ==========================================
-  const handleAuthSubmit = (e) => {
+  const handleAuthSubmit = async (e) => {
     e.preventDefault();
     setAuthError('');
-    const users = JSON.parse(localStorage.getItem('nexus_users') || '[]');
 
     if (authMode === 'login') {
-      const user = users.find(u => u.username.toLowerCase() === authForm.username.toLowerCase() && u.password === authForm.password);
-      if (user) {
-        setCurrentUser(user);
-        localStorage.setItem('nexus_current_user', JSON.stringify(user));
+      try {
+        const emailToUse = authForm.email.includes('@') ? authForm.email : `${authForm.email}@nexus.com`;
+        await signInWithEmailAndPassword(auth, emailToUse, authForm.password);
         setShowAuthModal(false);
         setAuthForm({ name: '', email: '', username: '', password: '' });
-      } else {
-        setAuthError('Usuario o contraseña incorrectos.');
+      } catch (err) {
+        console.error(err);
+        setAuthError('Correo o contraseña incorrectos.');
       }
     } else {
-      // Register Mode
-      if (users.some(u => u.username.toLowerCase() === authForm.username.toLowerCase())) {
-        setAuthError('El nombre de usuario ya está tomado.');
-        return;
-      }
-      if (users.some(u => u.email.toLowerCase() === authForm.email.toLowerCase())) {
-        setAuthError('El correo electrónico ya está registrado.');
-        return;
-      }
+      // Register
+      try {
+        const userCredential = await createUserWithEmailAndPassword(auth, authForm.email, authForm.password);
+        const user = userCredential.user;
 
-      const newUser = {
-        name: authForm.name,
-        email: authForm.email,
-        username: authForm.username,
-        password: authForm.password,
-        rank: 'Rig Builder Rookie',
-        avatarColor: 'from-purple-500 to-pink-500'
-      };
+        await updateProfile(user, { displayName: authForm.name });
 
-      const updatedUsers = [...users, newUser];
-      localStorage.setItem('nexus_users', JSON.stringify(updatedUsers));
-      setCurrentUser(newUser);
-      localStorage.setItem('nexus_current_user', JSON.stringify(newUser));
-      setShowAuthModal(false);
-      setAuthForm({ name: '', email: '', username: '', password: '' });
+        const userProfile = {
+          name: authForm.name,
+          email: authForm.email,
+          username: authForm.username || authForm.email.split('@')[0],
+          rank: 'Rig Builder Rookie',
+          avatarColor: 'from-purple-500 to-pink-500'
+        };
+
+        await setDoc(doc(db, 'users', user.uid), userProfile);
+        
+        setShowAuthModal(false);
+        setAuthForm({ name: '', email: '', username: '', password: '' });
+        alert("¡Cuenta registrada con éxito!");
+      } catch (err) {
+        console.error(err);
+        setAuthError('Error al crear la cuenta: ' + err.message);
+      }
     }
   };
 
-  const handleLogout = () => {
-    setCurrentUser(null);
-    localStorage.removeItem('nexus_current_user');
-    setShowProfileDropdown(false);
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setCurrentUser(null);
+      setShowProfileDropdown(false);
+    } catch (err) {
+      console.error("Logout error:", err);
+    }
   };
 
   // ==========================================
@@ -467,7 +537,7 @@ export default function App() {
     setCart(prevCart => prevCart.map(item => {
       if (item.id === productId) {
         const newQty = item.quantity + amount;
-        const product = PRODUCTS.find(p => p.id === productId);
+        const product = products.find(p => p.id === productId);
         return newQty > 0 && newQty <= (product?.stock || 99)
           ? { ...item, quantity: newQty }
           : item;
@@ -480,25 +550,12 @@ export default function App() {
     setCart(prevCart => prevCart.filter(item => item.id !== productId));
   };
 
-  const getCartSubtotal = () => {
-    return cart.reduce((total, item) => total + (item.price * item.quantity), 0);
-  };
-
   // ==========================================
-  // DYNAMIC CHECKOUT
+  // FIRESTORE ORDER SUBMISSION
   // ==========================================
-  const handleProceedToCheckout = () => {
-    if (!currentUser) {
-      setIsCartOpen(false);
-      setShowAuthModal(true);
-      setAuthMode('login');
-      return;
-    }
-    setShowCheckoutModal(true);
-  };
-
-  const handleCheckoutSuccess = (e, checkoutForm) => {
+  const handleCheckoutSuccess = async (e, checkoutForm) => {
     e.preventDefault();
+    if (!currentUser) return;
     
     // Generate tracking code: NEX-XXXXXX
     const randomHex = Math.floor(16777215 + Math.random() * 8388607).toString(16).toUpperCase();
@@ -513,6 +570,7 @@ export default function App() {
 
     const newOrder = {
       id: trackingCode,
+      buyerUid: currentUser.uid,
       buyerName: currentUser.name,
       email: currentUser.email,
       address: checkoutForm.address,
@@ -530,60 +588,22 @@ export default function App() {
       ]
     };
 
-    const updatedOrders = [newOrder, ...orders];
-    setOrders(updatedOrders);
-    localStorage.setItem('nexus_orders', JSON.stringify(updatedOrders));
-
-    setCart([]);
-    setShowCheckoutModal(false);
-    setIsCartOpen(false);
-    setNewOrderSuccess(newOrder);
-  };
-
-  // ==========================================
-  // PC BUILDER
-  // ==========================================
-  const selectBuilderPart = (category, part) => {
-    setBuilderSpecs(prev => ({ ...prev, [category]: part }));
-  };
-
-  const clearBuilder = () => {
-    setBuilderSpecs({ CPU: null, Motherboard: null, RAM: null, GPU: null, Storage: null, PSU: null, Case: null });
-  };
-
-  const getBuilderTotals = () => {
-    let price = 0;
-    let consumedWatts = 0;
-    let suppliedWatts = 0;
-
-    Object.values(builderSpecs).forEach(part => {
-      if (part) {
-        price += part.price;
-        if (part.isPowerSupply) {
-          suppliedWatts = part.watts;
-        } else {
-          consumedWatts += part.watts;
-        }
-      }
-    });
-
-    return { price, consumedWatts, suppliedWatts };
-  };
-
-  const addBuilderToCart = () => {
-    const activeParts = Object.values(builderSpecs).filter(part => part !== null);
-    if (activeParts.length === 0) {
-      alert("Por favor, selecciona componentes en el PC Builder.");
-      return;
+    try {
+      // Write to Firestore orders collection
+      await setDoc(doc(db, 'orders', trackingCode), newOrder);
+      
+      setCart([]);
+      setShowCheckoutModal(false);
+      setIsCartOpen(false);
+      setNewOrderSuccess(newOrder);
+    } catch (err) {
+      console.error("Firestore order creation error:", err);
+      alert("Error al procesar la orden en la base de datos.");
     }
-    
-    activeParts.forEach(part => addToCart(part));
-    alert(`¡Se agregaron ${activeParts.length} piezas del PC Builder al carrito!`);
-    setIsCartOpen(true);
   };
 
   // ==========================================
-  // DYNAMIC TRACKING LOGIC
+  // REAL-TIME TRACKING SUBSCRIBER
   // ==========================================
   const handleSearchTracking = (code = null) => {
     const targetCode = (code || searchTrackingInput).trim().toUpperCase();
@@ -593,20 +613,34 @@ export default function App() {
       return;
     }
 
-    const matchedOrder = orders.find(o => o.id === targetCode);
-    if (matchedOrder) {
-      setTrackingResult(matchedOrder);
-      setTrackingError('');
-    } else {
-      setTrackingError('Guía no registrada. Verifique el código de seguimiento.');
-      setTrackingResult(null);
+    setTrackingError('');
+    
+    // Setup Firestore onSnapshot tracking listener
+    const docRef = doc(db, 'orders', targetCode);
+    
+    if (window.activeTrackingListener) {
+      window.activeTrackingListener();
     }
+
+    window.activeTrackingListener = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setTrackingResult(docSnap.data());
+        setTrackingError('');
+      } else {
+        setTrackingError('Guía no registrada. Verifique el código de seguimiento.');
+        setTrackingResult(null);
+      }
+    }, (err) => {
+      console.error("Firestore tracking listener error:", err);
+      setTrackingError('Error al conectar con la base de datos.');
+      setTrackingResult(null);
+    });
   };
 
   // ==========================================
-  // LOGISTICS PROGRESSION
+  // INTRANET ORDER STATUS DISPATCHER
   // ==========================================
-  const handleSimulateStatusChange = (newStatus) => {
+  const handleSimulateStatusChange = async (newStatus) => {
     if (!trackingResult) return;
 
     const now = new Date();
@@ -645,23 +679,23 @@ export default function App() {
       }
     });
 
-    const updatedOrder = {
-      ...trackingResult,
-      status: newStatus,
-      history: updatedHistory
-    };
-
-    const updatedOrdersList = orders.map(o => o.id === trackingResult.id ? updatedOrder : o);
-    setOrders(updatedOrdersList);
-    localStorage.setItem('nexus_orders', JSON.stringify(updatedOrdersList));
-
-    setTrackingResult(updatedOrder);
+    try {
+      const docRef = doc(db, 'orders', trackingResult.id);
+      await updateDoc(docRef, {
+        status: newStatus,
+        history: updatedHistory
+      });
+      // onSnapshot automatically updates trackingResult in client
+    } catch (err) {
+      console.error("Firestore status update error:", err);
+      alert("Error al actualizar la orden en el servidor.");
+    }
   };
 
   // ==========================================
-  // INVOICING (FACTURACIÓN CFDI)
+  // FIRESTORE TAX INVOICE SEARCH
   // ==========================================
-  const handleSearchOrderToBill = (code = null) => {
+  const handleSearchOrderToBill = async (code = null) => {
     setInvoiceSearchError('');
     setGeneratedInvoice(null);
     const targetCode = (code || invoiceSearchCode).trim().toUpperCase();
@@ -672,11 +706,17 @@ export default function App() {
       return;
     }
 
-    const matched = orders.find(o => o.id === targetCode);
-    if (matched) {
-      setSelectedOrderToBill(matched);
-    } else {
-      setInvoiceSearchError('El código de pedido no coincide con ningún registro.');
+    try {
+      const docSnap = await getDoc(doc(db, 'orders', targetCode));
+      if (docSnap.exists()) {
+        setSelectedOrderToBill(docSnap.data());
+      } else {
+        setInvoiceSearchError('El código de pedido no coincide con ningún registro.');
+        setSelectedOrderToBill(null);
+      }
+    } catch (err) {
+      console.error("Firestore invoice order lookup error:", err);
+      setInvoiceSearchError('Error de red al consultar el pedido.');
       setSelectedOrderToBill(null);
     }
   };
@@ -685,7 +725,6 @@ export default function App() {
     e.preventDefault();
     if (!selectedOrderToBill) return;
 
-    // Generate simulated official CFDI 4.0 data
     const randomUUID = () => {
       const s4 = () => Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1).toUpperCase();
       return `${s4()}${s4()}-${s4()}-${s4()}-${s4()}-${s4()}${s4()}${s4()}`;
@@ -695,7 +734,6 @@ export default function App() {
     const now = new Date();
     const formattedCertTime = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}T${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
 
-    // Sello Digital mock text
     const mockSello = "N3XU5Se11oD1g1ta1Em1s0rBase64==" + Math.floor(Math.random() * 1000000);
     const mockSelloSAT = "SATSe11oD1g1ta1Cert1f1cad0Base64==" + Math.floor(Math.random() * 1000000);
     const mockCadena = `||1.1|${uuid}|${formattedCertTime}|${mockSello}|00001000000504465028||`;
@@ -720,8 +758,11 @@ export default function App() {
     setGeneratedInvoice(invoiceData);
   };
 
-  // Catalog Processing (Filter & Sort)
-  const filteredProducts = PRODUCTS.filter(p => {
+  // PC Builder specs total helper
+  const activeSelectedParts = Object.values(builderSpecs).filter(p => p !== null);
+
+  // Filters & Sorting list execution
+  const filteredProducts = products.filter(p => {
     const matchesCategory = selectedCategory === 'Todas' || p.category === selectedCategory;
     const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
                           p.specs.toLowerCase().includes(searchQuery.toLowerCase());
@@ -731,9 +772,6 @@ export default function App() {
     if (sortBy === 'price-desc') return b.price - a.price;
     return 0;
   });
-
-  const { price: builderTotal, consumedWatts: builderWatts, suppliedWatts: psuWatts } = getBuilderTotals();
-  const isPowerInsufficient = psuWatts > 0 && builderWatts > psuWatts;
 
   return (
     <div className="min-h-screen bg-[#0B0F19] text-[#94A3B8] relative overflow-hidden flex flex-col">
@@ -1006,7 +1044,12 @@ export default function App() {
             </div>
 
             {/* Products grid */}
-            {filteredProducts.length > 0 ? (
+            {loadingProducts ? (
+              <div className="flex items-center justify-center py-24">
+                <div className="w-10 h-10 border-4 border-cyan-500/20 border-t-cyan-500 rounded-full animate-spin"></div>
+                <span className="ml-3.5 text-slate-400 text-sm font-semibold uppercase tracking-wider">Conectando con base de datos real...</span>
+              </div>
+            ) : filteredProducts.length > 0 ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                 {filteredProducts.map(product => {
                   const isJustAdded = justAddedProduct === product.id;
@@ -1070,7 +1113,7 @@ export default function App() {
                                 : 'bg-[#1e293b] text-white hover:bg-gradient-to-r hover:from-cyan-500 hover:to-purple-600 hover:shadow-neon-cyan hover:scale-[1.02]'
                             }`}
                           >
-                            {isJustAdded ? <Check className="h-4.5 w-4.5" /> : <Plus className="h-4.5 w-4.5" />}
+                            {isJustAdded ? <Check className="h-4.5 w-4.5 animate-bounce" /> : <Plus className="h-4.5 w-4.5" />}
                             <span>{isJustAdded ? 'Añadido' : 'Comprar'}</span>
                           </button>
                         </div>
@@ -1138,7 +1181,7 @@ export default function App() {
                   { key: 'Case', label: 'Gabinete (Case)', desc: 'Chasis de soporte físico y montaje general' }
                 ].map(item => {
                   const currentSelection = builderSpecs[item.key];
-                  const options = PRODUCTS.filter(p => p.category === item.key);
+                  const options = products.filter(p => p.category === item.key);
 
                   return (
                     <div 
@@ -1163,7 +1206,7 @@ export default function App() {
                               if (val === '') {
                                 selectBuilderPart(item.key, null);
                               } else {
-                                const match = PRODUCTS.find(p => p.id === parseInt(val));
+                                const match = products.find(p => p.id === parseInt(val));
                                 selectBuilderPart(item.key, match);
                               }
                             }}
@@ -1347,24 +1390,26 @@ export default function App() {
               )}
 
               {/* Operating history links */}
-              <div className="pt-4 border-t border-white/5 space-y-3">
-                <span className="text-[10px] text-slate-500 font-extrabold uppercase tracking-widest block">Registros del sistema de logística:</span>
-                <div className="flex flex-wrap gap-2.5">
-                  {orders.map(o => (
-                    <button
-                      key={o.id}
-                      onClick={() => {
-                        setSearchTrackingInput(o.id);
-                        handleSearchTracking(o.id);
-                      }}
-                      className="px-3.5 py-2 text-xs bg-[#1F293D]/30 border border-white/5 hover:border-purple-500/30 text-slate-400 hover:text-white rounded-xl transition-all font-mono"
-                    >
-                      <span className="text-cyan-400 font-bold mr-1.5">{o.id}</span>
-                      <span className="text-[10px] text-slate-500 font-sans">({o.buyerName.split(' ')[0]})</span>
-                    </button>
-                  ))}
+              {orders.length > 0 && (
+                <div className="pt-4 border-t border-white/5 space-y-3">
+                  <span className="text-[10px] text-slate-500 font-extrabold uppercase tracking-widest block">Tus Órdenes en Tránsito:</span>
+                  <div className="flex flex-wrap gap-2.5">
+                    {orders.map(o => (
+                      <button
+                        key={o.id}
+                        onClick={() => {
+                          setSearchTrackingInput(o.id);
+                          handleSearchTracking(o.id);
+                        }}
+                        className="px-3.5 py-2 text-xs bg-[#1F293D]/30 border border-white/5 hover:border-purple-500/30 text-slate-400 hover:text-white rounded-xl transition-all font-mono"
+                      >
+                        <span className="text-cyan-400 font-bold mr-1.5">{o.id}</span>
+                        <span className="text-[10px] text-slate-500 font-sans">({o.createdAt.split(' ')[0]})</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
             {/* Timeline Results Panel */}
@@ -1376,11 +1421,11 @@ export default function App() {
                   <div className="flex items-center space-x-2">
                     <Wrench className="h-4.5 w-4.5 text-cyan-400" />
                     <span className="text-xs text-white font-extrabold uppercase tracking-wider">
-                      PANEL ADMINISTRATIVO DE DESPACHO (CONTROL OPERATIVO INTERNO)
+                      PANEL ADMINISTRATIVO DE DESPACHO (CONTROL OPERATIVO INTERNO - FIRESTORE)
                     </span>
                   </div>
                   <p className="text-slate-400 text-[11px] leading-relaxed">
-                    Actualiza la bitácora interna de tránsito para registrar la salida técnica del almacén y entrega al transportista express.
+                    Actualiza la bitácora interna de tránsito en Firestore. Todos los clientes suscritos verán los cambios en tiempo real.
                   </p>
                   <div className="flex flex-wrap gap-2">
                     {[
@@ -1395,7 +1440,7 @@ export default function App() {
                         className={`px-3 py-2 text-[10px] font-bold rounded-lg border transition-all ${
                           trackingResult.status === btn.step
                             ? 'bg-cyan-500 text-[#0B0F19] border-transparent font-extrabold shadow-neon-cyan'
-                            : 'border-white/5 hover:border-cyan-500/30 text-slate-400 hover:text-white bg-slate-950'
+                            : 'border-white/5 hover:border-cyan-500/30 text-slate-400 hover:text-white bg-slate-955'
                         }`}
                       >
                         {btn.label}
@@ -1512,7 +1557,7 @@ export default function App() {
             ) : (
               <div className="text-center py-16 border border-dashed border-white/5 rounded-2xl glass-panel">
                 <Truck className="h-10 w-10 text-slate-600 mx-auto mb-3" />
-                <p className="text-slate-500 text-xs">Introduce el código para verificar el estado de entrega.</p>
+                <p className="text-slate-500 text-xs">Introduce el código de guía para monitorear tu pedido real en la nube.</p>
               </div>
             )}
           </div>
@@ -1579,13 +1624,13 @@ export default function App() {
 
                   {/* Emisor / Receptor details */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6 border-b border-slate-200 pb-5">
-                    <div className="space-y-1 bg-slate-55 shadow-sm p-3.5 rounded-lg border border-slate-100">
+                    <div className="space-y-1 bg-slate-50 p-3.5 rounded-lg border border-slate-100">
                       <h4 className="font-extrabold text-slate-900 border-b border-slate-200 pb-1 mb-1.5 uppercase">EMISOR</h4>
                       <p><strong className="text-slate-500">Razón Social:</strong> <span className="font-bold">{generatedInvoice.razonSocialEmisor}</span></p>
                       <p><strong className="text-slate-500">RFC:</strong> <span className="font-mono font-bold">{generatedInvoice.rfcEmisor}</span></p>
                       <p><strong className="text-slate-500">Régimen Fiscal:</strong> <span>{generatedInvoice.regimenEmisor}</span></p>
                     </div>
-                    <div className="space-y-1 bg-slate-55 shadow-sm p-3.5 rounded-lg border border-slate-100">
+                    <div className="space-y-1 bg-slate-50 p-3.5 rounded-lg border border-slate-100">
                       <h4 className="font-extrabold text-slate-900 border-b border-slate-200 pb-1 mb-1.5 uppercase">RECEPTOR</h4>
                       <p><strong className="text-slate-500">Razón Social:</strong> <span className="font-bold">{generatedInvoice.razonSocialReceptor}</span></p>
                       <p><strong className="text-slate-500">RFC:</strong> <span className="font-mono font-bold">{generatedInvoice.rfcReceptor}</span></p>
@@ -1859,8 +1904,6 @@ export default function App() {
                           >
                             Rastrear Envío
                           </button>
-                          
-                          {/* Invoice trigger button */}
                           <button
                             onClick={() => {
                               setInvoiceSearchCode(order.id);
@@ -2067,15 +2110,15 @@ export default function App() {
               )}
 
               <div className="space-y-1.5">
-                <label className="text-slate-400 font-semibold">Nombre de Usuario</label>
+                <label className="text-slate-400 font-semibold">Correo Electrónico / Usuario</label>
                 <div className="relative">
                   <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
                   <input 
                     required 
                     type="text" 
-                    placeholder="cyber_gamer" 
-                    value={authForm.username}
-                    onChange={(e) => setAuthForm({ ...authForm, username: e.target.value })}
+                    placeholder="cyber_gamer@nexus.com" 
+                    value={authForm.email}
+                    onChange={(e) => setAuthForm({ ...authForm, email: e.target.value })}
                     className="w-full pl-9 pr-3 py-2 bg-[#0B0F19] border border-white/5 rounded-lg text-white focus:border-cyan-500/40 focus:outline-none" 
                   />
                 </div>
@@ -2293,7 +2336,7 @@ export default function App() {
                     );
                   })}
 
-                  {Object.values(builderSpecs).filter(v => v !== null).length === 0 && (
+                  {activeSelectedParts.length === 0 && (
                     <div className="text-center py-8 text-xs italic text-slate-600">
                       No has seleccionado ningún componente todavía.
                     </div>
@@ -2305,7 +2348,7 @@ export default function App() {
               <div className="bg-[#0B0F19] p-4 rounded-xl border border-white/5 space-y-3.5 font-mono text-xs text-slate-400">
                 <div className="flex justify-between">
                   <span>Piezas Totales:</span>
-                  <span className="text-white font-bold">{Object.values(builderSpecs).filter(v => v !== null).length}</span>
+                  <span className="text-white font-bold">{activeSelectedParts.length}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Carga de Energía:</span>
