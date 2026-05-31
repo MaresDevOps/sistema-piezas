@@ -109,3 +109,60 @@ body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   overflow-x: hidden;
 }
+
+/* Print specific styles to isolate invoices/quotes */
+@media print {
+  body {
+    background-color: white !important;
+    color: black !important;
+    margin: 0;
+    padding: 0;
+  }
+  body * {
+    visibility: hidden;
+  }
+  
+  #sat-invoice, #sat-invoice * {
+    visibility: visible;
+  }
+  #sat-invoice {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  #quote-print-area, #quote-print-area * {
+    visibility: visible;
+  }
+  #quote-print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    box-shadow: none !important;
+    border: none !important;
+    background-color: white !important;
+    color: black !important;
+  }
+
+  #oxxo-print-area, #oxxo-print-area * {
+    visibility: visible;
+    display: block !important;
+  }
+  #oxxo-print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    background-color: white !important;
+  }
+}
